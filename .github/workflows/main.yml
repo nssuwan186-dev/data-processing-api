@@ -1,0 +1,49 @@
+name: Data Processing Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_type:
+        description: 'Type of job to run'
+        required: true
+        default: 'process_pdf'
+        type: choice
+        options:
+        - process_pdf
+        - process_excel
+        - generate_report
+      input_url:
+        description: 'URL of input file (optional)'
+        required: false
+
+jobs:
+  process-data:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v1
+
+    - name: Install Dependencies
+      run: uv sync --all-extras --dev
+
+    - name: Run Processing Job
+      env:
+        JOB_TYPE: ${{ inputs.job_type }}
+        INPUT_URL: ${{ inputs.input_url }}
+      run: |
+        uv run python -m app.main
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: processed-result
+        path: output/
+        retention-days: 1
