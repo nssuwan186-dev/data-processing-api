@@ -1,9 +1,8 @@
 import pandas as pd
-import fitz  # PyMuPDF
-from openpyxl.styles import Font, Alignment
+import fitz
 from pathlib import Path
 import structlog
-import re
+import os
 
 log = structlog.get_logger()
 
@@ -11,67 +10,49 @@ class DataProcessor:
     def __init__(self, output_dir: str = "output"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        # Keywords ที่บ่งบอกว่าเป็น "คู่มือ" หรือ "คำอธิบาย" (ไม่ใช่เนื้อหางาน)
-        self.blacklist_keywords = ["คู่มือ", "แนวทาง", "วิธีใช้งาน", "คำชี้แจง", "หมายเหตุ", "ขั้นตอนการ", "manual", "guide"]
+        # คีย์เวิร์ดที่ต้องมีใน "เนื้อหางาน"
+        self.work_anchors = ["ลำดับ", "รายการ", "งาน", "สถานะ", "ผู้รับผิดชอบ", "วันที่"]
 
-    def is_tabular_data(self, text: str):
-        """ตรวจสอบว่าข้อความมีลักษณะเป็นตารางหรือเนื้อหางานหรือไม่"""
-        # ถ้าข้อความมีความยาวมากเกินไปในย่อหน้าเดียว มักจะเป็น "คำอธิบาย"
-        if len(text) > 500 and "\n" not in text[:100]:
+    def is_real_work_page(self, page):
+        """ตรวจสอบว่าหน้านี้มีเนื้อหางานจริงๆ หรือไม่"""
+        text = page.get_text().lower()
+        # 1. ต้องมี Anchor keywords อย่างน้อย 2 คำ
+        matches = sum(1 for anchor in self.work_anchors if anchor in text)
+        if matches < 2:
             return False
         
-        # ตรวจสอบ Blacklist keywords
-        if any(kw in text for kw in self.blacklist_keywords):
-            return False
-            
-        return True
+        # 2. ต้องมีโครงสร้างตาราง
+        tabs = page.find_tables()
+        return len(tabs.tables) > 0
 
-    def process_pdf_smart_filter(self, pdf_path: str):
-        """อ่าน PDF และกรองเอาเฉพาะข้อมูลตาราง/เนื้อหางาน"""
-        log.info("smart_filter_start", path=pdf_path)
-        extracted_rows = []
+    def process_pdf_strictly(self, pdf_path: str):
+        """สกัดข้อมูลแบบเน้นคุณภาพ (Quality-First)"""
+        log.info("strict_processing_start", file=pdf_path)
+        all_data = []
         
         with fitz.open(pdf_path) as doc:
-            for page_num, page in enumerate(doc):
-                # 1. ดึงตารางจากหน้า (ถ้ามี)
-                tabs = page.find_tables()
-                if tabs.tables:
-                    for tab in tabs:
-                        df = tab.to_pandas()
-                        # กรองคอลัมน์ที่ว่างเปล่าออก
-                        df = df.dropna(how='all', axis=1)
-                        # เพิ่มข้อมูลเข้า list
-                        extracted_rows.extend(df.to_dict(orient='records'))
-                    log.info("table_extracted", page=page_num + 1)
-                else:
-                    # 2. ถ้าไม่มีโครงสร้างตารางแบบชัดเจน ให้ลองวิเคราะห์ข้อความ
-                    text = page.get_text()
-                    if self.is_tabular_data(text):
-                        # พยายามแบ่งแถวด้วยบรรทัด
-                        lines = [line.strip() for line in text.split("\n") if line.strip()]
-                        if len(lines) > 2: # ต้องมีหลายบรรทัดถึงจะนับเป็นข้อมูล
-                            extracted_rows.append({"raw_content": text, "page": page_num + 1})
-        
-        if not extracted_rows:
-            log.warning("no_relevant_data_found", path=pdf_path)
-            return None
-
-        log.info("smart_filter_complete", total_records=len(extracted_rows))
-        return extracted_rows
-
-    def save_to_excel_clean(self, data: list, filename: str):
-        """บันทึกเฉพาะข้อมูลที่คัดกรองแล้วลง Excel"""
-        if not data: return None
-        
-        path = self.output_dir / filename
-        df = pd.DataFrame(data)
-        
-        with pd.ExcelWriter(path, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='WorkContent')
-            # ตกแต่งหัวตารางให้เป็นมืออาชีพ
-            ws = writer.sheets['WorkContent']
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center')
+            for i, page in enumerate(doc):
+                if not self.is_real_work_page(page):
+                    log.info("skipping_junk_page", page=i+1)
+                    continue
                 
+                tabs = page.find_tables()
+                for tab in tabs:
+                    df = tab.to_pandas()
+                    # ลบแถว/คอลัมน์ที่ว่างเปล่าทิ้งทันที (Cleanup)
+                    df = df.dropna(how='all').dropna(how='all', axis=1)
+                    if not df.empty:
+                        all_data.append(df)
+        
+        if not all_data:
+            return None
+            
+        # รวมข้อมูลทุกหน้าเป็นตารางเดียว
+        final_df = pd.concat(all_data, ignore_index=True)
+        return final_df
+
+    def save_final_result(self, df, filename: str):
+        path = self.output_dir / filename
+        df.to_excel(path, index=False)
+        log.info("data_saved_successfully", path=str(path))
         return path

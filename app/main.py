@@ -1,10 +1,8 @@
 from app.processor import DataProcessor
-from app.security import DataPolicyEngine
 import os
 import structlog
-import sys
 
-# Setup Logging
+# Setup Logging (JSON for Cloud Analysis)
 structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),
@@ -13,35 +11,28 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-def cloud_worker():
-    """รันงานประมวลผลบน Cloud (GitHub Actions)"""
-    job_type = os.getenv("JOB_TYPE", "process_pdf")
+def run_pilot_extraction():
     processor = DataProcessor()
-    policy_engine = DataPolicyEngine()
+    input_file = "input.pdf"
+    output_file = "cleaned_work_report.xlsx"
     
-    log.info("cloud_worker_start", job=job_type)
+    log.info("worker_started")
     
-    if job_type == "process_pdf":
-        input_pdf = "input.pdf"
-        if not os.path.exists(input_pdf):
-            log.error("file_not_found", file=input_pdf)
-            return
+    if not os.path.exists(input_file):
+        log.error("critical_error", reason="input_file_missing")
+        return
 
-        # 1. สกัดและคัดกรองตาราง (ตัดคู่มือและคำอธิบายออก)
-        clean_data = processor.process_pdf_smart_filter(input_pdf)
-        
-        if clean_data:
-            # 2. บันทึกเฉพาะเนื้อหางานลง Excel
-            output_file = "filtered_work_data.xlsx"
-            processor.save_to_excel_clean(clean_data, output_file)
-            log.info("processing_success", items=len(clean_data), output=output_file)
-        else:
-            # 3. ลบไฟล์ทิ้งถ้าเป็นไฟล์ว่างหรือมีแต่คู่มือ
-            os.remove(input_pdf)
-            log.warning("file_deleted", reason="empty_or_manual_only")
-            
+    # 1. รันการสกัดข้อมูลแบบเข้มงวด
+    df = processor.process_pdf_strictly(input_file)
+    
+    if df is not None and not df.empty:
+        # 2. บันทึกผลลัพธ์
+        processor.save_final_result(df, output_file)
+        log.info("pilot_run_success", records=len(df))
     else:
-        log.info("other_job_types_not_implemented_in_pilot")
+        # 3. นโยบายลบไฟล์ขยะ
+        log.warning("no_quality_data_found", action="deleting_junk_input")
+        os.remove(input_file)
 
 if __name__ == "__main__":
-    cloud_worker()
+    run_pilot_extraction()

@@ -7,14 +7,8 @@ on:
         description: 'Type of job to run'
         required: true
         default: 'process_pdf'
-        type: choice
-        options:
-        - process_pdf
-        - process_excel
-        - generate_report
-      input_url:
-        description: 'URL of input file (optional)'
-        required: false
+  push:
+    branches: [ main ]
 
 jobs:
   process-data:
@@ -31,19 +25,24 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v1
 
-    - name: Install Dependencies
-      run: uv sync --all-extras --dev
-
-    - name: Run Processing Job
-      env:
-        JOB_TYPE: ${{ inputs.job_type }}
-        INPUT_URL: ${{ inputs.input_url }}
+    - name: Install Dependencies & Package
       run: |
-        uv run python -m app.main
+        uv sync --all-extras --dev
+        # ติดตั้งตัวโปรเจกต์เองเพื่อให้เรียกใช้ app.xxx ได้แน่นอน
+        uv pip install -e . 
+
+    - name: Run Intelligent Processing
+      env:
+        JOB_TYPE: ${{ github.event.inputs.job_type || 'process_pdf' }}
+      run: |
+        # รันและบันทึก log แบบละเอียดเพื่อการวิเคราะห์
+        uv run python -m app.main > processing.log 2>&1 || (cat processing.log && exit 1)
         
-    - name: Upload Artifacts
+    - name: Upload Results
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: processed-result
-        path: output/
-        retention-days: 1
+        name: final-output
+        path: |
+          output/
+          processing.log
